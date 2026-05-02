@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Focus Guardian - Anti-Distraction</title>
+    <!-- MediaPipe Face Detection -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/face_detection.js" crossorigin="anonymous"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            background-color: #0f172a;
+            color: #f8fafc;
+            text-align: center;
+        }
+        .container {
+            max-width: 800px;
+            padding: 20px;
+        }
+        h1 {
+            color: #38bdf8;
+            margin-bottom: 10px;
+            font-size: 2.5rem;
+        }
+        p {
+            color: #94a3b8;
+            font-size: 1.2rem;
+            margin-bottom: 30px;
+        }
+        #video-wrapper {
+            position: relative;
+            margin: 20px auto;
+            width: 640px;
+            height: 480px;
+            border-radius: 16px;
+            overflow: hidden;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+            border: 4px solid #334155;
+            transition: all 0.3s ease;
+            display: none;
+        }
+        .distracted-border {
+            border-color: #ef4444 !important;
+            box-shadow: 0 10px 40px rgba(239, 68, 68, 0.6) !important;
+        }
+        video {
+            display: block;
+            width: 100%;
+            height: 100%;
+            transform: scaleX(-1);
+            object-fit: cover;
+        }
+        canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            transform: scaleX(-1);
+        }
+        .btn-start {
+            padding: 16px 36px;
+            font-size: 20px;
+            font-weight: bold;
+            background: linear-gradient(135deg, #0284c7, #2563eb);
+            color: white;
+            border: none;
+            border-radius: 50px;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            box-shadow: 0 4px 15px rgba(37, 99, 235, 0.4);
+        }
+        .btn-start:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(37, 99, 235, 0.6);
+        }
+        #status {
+            margin-top: 25px;
+            font-size: 28px;
+            font-weight: 800;
+            color: #22c55e;
+            display: none;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .status-distracted {
+            color: #ef4444 !important;
+            animation: pulse 0.5s infinite alternate;
+        }
+        @keyframes pulse {
+            0% { transform: scale(1); opacity: 1; }
+            100% { transform: scale(1.05); opacity: 0.8; }
+        }
+        .loader {
+            border: 4px solid #334155;
+            border-top: 4px solid #38bdf8;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+            display: none;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h1>Focus Guardian</h1>
+        <p>Agar aapne phone dekha ya sar niche kiya, toh alarm baje ga! 🚨</p>
+        
+        <button id="startButton" class="btn-start">Start Monitoring</button>
+        <div id="loading" class="loader"></div>
+        
+        <div id="status">Monitoring... Looking Good!</div>
+
+        <div id="video-wrapper">
+            <video id="input_video" autoplay playsinline></video>
+            <canvas id="output_canvas" width="640" height="480"></canvas>
+        </div>
+    </div>
+
+    <!-- Alarm Audio -->
+    <audio id="alarmAudio" loop preload="auto"></audio>
+
+    <script>
+        const videoElement = document.getElementById('input_video');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const startButton = document.getElementById('startButton');
+        const statusElement = document.getElementById('status');
+        const videoWrapper = document.getElementById('video-wrapper');
+        const alarmAudio = document.getElementById('alarmAudio');
+        const loadingElement = document.getElementById('loading');
+
+        // Debug Log Element
+        const debugLog = document.createElement('div');
+        debugLog.style.cssText = "margin-top: 20px; color: #fbbf24; font-family: monospace; font-size: 14px; text-align: left; background: #1e293b; padding: 10px; border-radius: 8px; width: 100%; max-width: 600px; margin-left: auto; margin-right: auto; max-height: 150px; overflow-y: auto;";
+        document.querySelector('.container').appendChild(debugLog);
+
+        function logDebug(msg) {
+            console.log(msg);
+            debugLog.innerHTML += `<div>[${new Date().toLocaleTimeString()}] ${msg}</div>`;
+            debugLog.scrollTop = debugLog.scrollHeight;
+        }
+
+        // Set audio source to match the exact filename on your Windows system
+        const audioFileName = "alarm.webm.webm";
+        alarmAudio.src = audioFileName;
+        
+        logDebug("Audio source set: " + audioFileName);
+
+        let isMonitoring = false;
+        let isDistracted = false;
+        let noFaceFrames = 0; 
+        const MAX_NO_FACE_FRAMES = 15; 
+
+        function onResults(results) {
+            if (!isMonitoring) return;
+
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+            let faceDetected = false;
+
+            if (results.detections && results.detections.length > 0) {
+                faceDetected = true;
+                for (const detection of results.detections) {
+                    drawRectangle(
+                        canvasCtx, detection.boundingBox,
+                        {color: '#22c55e', lineWidth: 3, fillColor: 'rgba(0,0,0,0)'});
+                }
+            }
+
+            canvasCtx.restore();
+
+            if (!faceDetected) {
+                noFaceFrames++;
+                if (noFaceFrames >= MAX_NO_FACE_FRAMES) {
+                    handleDistraction(true);
+                }
+            } else {
+                noFaceFrames = 0;
+                handleDistraction(false);
+            }
+        }
+
+        function handleDistraction(distracted) {
+            if (distracted) {
+                if (!isDistracted) {
+                    isDistracted = true;
+                    logDebug("Distraction detected! Playing audio...");
+                    statusElement.textContent = "DISTRACTION DETECTED! UTH JA!";
+                    statusElement.classList.add('status-distracted');
+                    videoWrapper.classList.add('distracted-border');
+                    
+                    let playPromise = alarmAudio.play();
+                    if (playPromise !== undefined) {
+                        playPromise.catch(e => {
+                            logDebug("Audio play error: " + e.message);
+                            statusElement.textContent = "ERROR: Click to unlock audio.";
+                        });
+                    }
+                }
+            } else {
+                if (isDistracted) {
+                    isDistracted = false;
+                    logDebug("Face detected. Stopping audio.");
+                    statusElement.textContent = "Monitoring... Looking Good!";
+                    statusElement.classList.remove('status-distracted');
+                    videoWrapper.classList.remove('distracted-border');
+                    
+                    alarmAudio.pause();
+                    alarmAudio.currentTime = 0; 
+                }
+            }
+        }
+
+        logDebug("Initializing FaceDetection...");
+        const faceDetection = new FaceDetection({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/${file}`;
+        }});
+
+        faceDetection.setOptions({
+            model: 'short',
+            minDetectionConfidence: 0.5
+        });
+
+        faceDetection.onResults(onResults);
+        logDebug("FaceDetection initialized.");
+
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                await faceDetection.send({image: videoElement});
+            },
+            width: 640,
+            height: 480
+        });
+
+        startButton.addEventListener('click', async () => {
+            logDebug("Start button clicked.");
+            if (!isMonitoring) {
+                startButton.style.display = 'none';
+                loadingElement.style.display = 'block';
+
+                logDebug("Testing audio playback...");
+                try {
+                    alarmAudio.volume = 1.0;
+                    let playPromise = alarmAudio.play();
+                    if (playPromise !== undefined) {
+                        playPromise.then(() => {
+                            logDebug("Audio test successful.");
+                            alarmAudio.pause();
+                            alarmAudio.currentTime = 0;
+                        }).catch(e => {
+                            logDebug("Audio test failed: " + e.message);
+                        });
+                    }
+                } catch(e) {
+                    logDebug("Audio catch error: " + e.message);
+                }
+
+                logDebug("Requesting Camera...");
+                
+                // Add a timeout checker for camera since file:/// blocks it silently sometimes
+                let cameraStarted = false;
+                setTimeout(() => {
+                    if(!cameraStarted) {
+                        logDebug("Camera request is taking too long. If you opened this file directly (file:///), the browser might be blocking the camera. Please use run.bat or a local server!");
+                    }
+                }, 5000);
+
+                camera.start().then(() => {
+                    cameraStarted = true;
+                    logDebug("Camera started successfully.");
+                    isMonitoring = true;
+                    loadingElement.style.display = 'none';
+                    statusElement.style.display = 'block';
+                    videoWrapper.style.display = 'block';
+                }).catch(err => {
+                    cameraStarted = true;
+                    logDebug("Camera start failed: " + err.message);
+                    alert("Camera access is required. Please allow camera permissions.");
+                    loadingElement.style.display = 'none';
+                    startButton.style.display = 'inline-block';
+                });
+            }
+        });
+        
+        document.body.addEventListener('click', () => {
+            if (isDistracted && alarmAudio.paused) {
+                alarmAudio.play().catch(e => logDebug("Body click play error: " + e.message));
+            }
+        });
+    </script>
+</body>
+</html>
